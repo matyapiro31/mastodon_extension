@@ -1,2 +1,2 @@
 # mastodon_extension
-Node.js mastodon extensive API packag
+Node.js mastodon extensive API package.
