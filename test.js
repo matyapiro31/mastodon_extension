@@ -42,11 +42,15 @@ app.post('/api/v2/poll', async (req, res) => {
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
 
+    console.log("title" + title);
+    console.log("choices:" + choices);
+
     await client.connect();
     //get Account ID.
-    const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token="$1"', token);
+    const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    console.log(account_id.rows[0].id||"Invalidate AccessToken.");
     //check if parameter is valid.
-    if ((typeof choices)!=="Array" || account_id.length == 0) {
+    if ((typeof choices)!=="Array" || account_id.rows.length == 0) {
         res.status(400);
         res.send('Invalidate parameter.');
         res.end();
@@ -57,15 +61,17 @@ app.post('/api/v2/poll', async (req, res) => {
             res.status(400);
             res.send('Invalidate parameter.');
             res.end();
+            console.log("TypeError: Wrong type for choices.");
         } else {
-            const ret=await client.query('INSERT INTO choices (content) VALUES ("$1") RETURNING id', choices[i]);
+            const ret=await client.query('INSERT INTO choices (content) VALUES ($1) RETURNING id', [choices[i]]);
             choices_id.push(ret.rows[0].id);
         }
     }
     //set time limit as unix time.
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
-    const ret=await client.query('INSERT INTO poll (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ("$1",to_timestamp($2),"$3","$4",$5,now(),ARRAY[$6],"/system/media_attachments/polls/","") RETURNING *',
-        title, time_limit, type, account_id[0],choices_id.toString());
+    const ret=await client.query(
+        'INSERT INTO poll (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
+        [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/","tag:example.com"]);
     await client.end();
     res.end();
 });
@@ -91,7 +97,7 @@ app.get('/api/v2/stylesheet', async (req, res) => {
     if (id) {
         console.log(req.query.theme);
         await client.connect();
-      //  const ret = await client.query('SELECT * FROM statuses where id=$1',id) 
+      //  const ret = await client.query('SELECT * FROM statuses where id=$1',id);
         await client.end();
     }
     res.end();
