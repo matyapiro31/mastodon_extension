@@ -41,38 +41,56 @@ app.post('/api/v2/poll', async (req, res) => {
     const type=req.body.type||'bar';
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
+    const choices_data=new Array();
 
-    console.log("title" + title);
-    console.log("choices:" + choices);
+    console.log("title: " + title);
+    console.log("choices: " + choices);
 
     await client.connect();
     //get Account ID.
     const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
-    console.log(account_id.rows[0].id||"Invalidate AccessToken.");
+    console.log(account_id.rows[0].id||"Invalid AccessToken.");
     //check if parameter is valid.
-    if ((typeof choices)!=="Array" || account_id.rows.length == 0) {
+    if (!Array.isArray(choices)) {
         res.status(400);
-        res.send('Invalidate parameter.');
+        res.send('Invalid object type: choices[].');
         res.end();
     }
     //set choices value.
     for (let i=0;i<choices.length;i++) {
         if ((typeof choices[i])!=="string") {
             res.status(400);
-            res.send('Invalidate parameter.');
+            res.send('Invalid parameter: choices.');
             res.end();
-            console.log("TypeError: Wrong type for choices.");
         } else {
-            const ret=await client.query('INSERT INTO choices (content) VALUES ($1) RETURNING id', [choices[i]]);
+            const ret=await client.query('INSERT INTO choices (content) VALUES ($1) RETURNING *', [choices[i]]);
             choices_id.push(ret.rows[0].id);
+            choices_data.push({
+                content: ret.rows[0].content,
+                id: ret.rows[0].id,
+                vote: ret.rows[0].vote
+            });
         }
     }
     //set time limit as unix time.
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
         'INSERT INTO poll (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
-        [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/","tag:example.com"]);
+        [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
     await client.end();
+    json_ret={
+        "id":ret.rows[0].id,
+        "limit": ret.rows[0].time_limit,
+        "meta": {
+            "title": ret.rows[0].tiile,
+            "choices": choices_data
+        },
+        "created_at": ret.rows[0].created_at.toString().substring(0,23)+"Z",
+        "type": "poll",
+        "url": ret.rows[0].url,
+        "uri": ret.rows[0].uri
+    };
+    res.json(json_ret);
     res.end();
 });
 
