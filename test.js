@@ -1,10 +1,11 @@
 const PORT=process.env.PORT||4040;
-const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon:mastodon@localhost:5432/mastodon_production';
+const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
 const fs=require('fs');
 const pg=require('pg');
 const express=require('express');
 const app=express();
 const bodyParser = require('body-parser');
+process.on('unhandledRejection', console.dir);
 
 /*
     express setting.
@@ -43,18 +44,21 @@ app.post('/api/v2/poll', async (req, res) => {
     const choices_id=new Array();
     const choices_data=new Array();
 
-    console.log("title: " + title);
-    console.log("choices: " + choices);
-
     await client.connect();
     //get Account ID.
     const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
-    console.log(account_id.rows[0].id||"Invalid AccessToken.");
+    console.log(account_id.rows.length===0?"Invalid AccessToken.":"");
     //check if parameter is valid.
     if (!Array.isArray(choices)) {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
+        return 0;
+    } else if (account_id.rows.length===0) {
+        res.status(400);
+        res.send('Invalid object type: choices[].');
+        res.end();
+        return 0;
     }
     //set choices value.
     for (let i=0;i<choices.length;i++) {
@@ -78,20 +82,31 @@ app.post('/api/v2/poll', async (req, res) => {
         'INSERT INTO poll (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
         [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
     await client.end();
-    json_ret={
-        "id":ret.rows[0].id,
-        "limit": ret.rows[0].time_limit,
-        "meta": {
-            "title": ret.rows[0].tiile,
-            "choices": choices_data
-        },
-        "created_at": ret.rows[0].created_at.toString().substring(0,23)+"Z",
-        "type": "poll",
-        "url": ret.rows[0].url,
-        "uri": ret.rows[0].uri
-    };
-    res.json(json_ret);
+    res.json(createJsonForPoll(ret.rows[0], choices_data));
     res.end();
+});
+
+app.get('/api/v2/poll', async (req, res) => {
+    const id=req.query.id;
+    await client.connect();
+    const pollData=await client.query(
+        'SELECT * FROM poll WHERE id=$1',
+        [id]
+    );
+    const choicesData=new Array();
+    for (let i in pollData.rows[0].choices_id) {
+        let choice=await client.query(
+                'SELECT * FROM choices WHERE id=$1',
+                [pollData.rows[0].choices_id[i]]
+        );
+        choicesData.push(choice.rows[0]);
+    }
+    await client.end();
+    res.json(createJsonForPoll(pollData.rows[0], choicesData));
+    res.end();
+});
+
+app.patch('/api/v2/vote', async (req, res) => {
 });
 
 app.post('/api/v2/draft', async (req, res) => {
@@ -116,6 +131,7 @@ app.get('/api/v2/stylesheet', async (req, res) => {
         console.log(req.query.theme);
         await client.connect();
       //  const ret = await client.query('SELECT * FROM statuses where id=$1',id);
+
         await client.end();
     }
     res.end();
@@ -128,3 +144,19 @@ app.listen(PORT, (err) => {
         console.log(JSON.stringify(err));
     }
 });
+
+function createJsonForPoll(pollData,choicesData) {
+    return {
+        "id":pollData.id,
+        "limit": pollData.time_limit,
+        "meta": {
+            "title": pollData.title,
+            "type": pollData.type,
+            "choices": choicesData
+        },
+        "created_at": pollData.created_at,
+        "type": "poll",
+        "url": pollData.url,
+        "uri": pollData.uri
+    };
+}
