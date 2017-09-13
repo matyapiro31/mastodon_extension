@@ -79,7 +79,7 @@ app.post('/api/v2/poll', async (req, res) => {
     //set time limit as unix time.
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
-        'INSERT INTO poll (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
+        'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
         [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choices_data));
@@ -88,9 +88,19 @@ app.post('/api/v2/poll', async (req, res) => {
 
 app.get('/api/v2/poll', async (req, res) => {
     const id=req.query.id;
+    if (!id) {
+        res.end();
+    }
     await client.connect();
+    //validate if id is exists.
+    const pollRange=await client.query(
+        'SELECT last_value FROM polls_id_seq'
+    );
+    if (id<1 ||| id>pollRange.rows[0].last_value) {
+        res.end();
+    }
     const pollData=await client.query(
-        'SELECT * FROM poll WHERE id=$1',
+        'SELECT * FROM polls WHERE id=$1',
         [id]
     );
     const choicesData=new Array();
@@ -107,6 +117,7 @@ app.get('/api/v2/poll', async (req, res) => {
 });
 
 app.patch('/api/v2/vote', async (req, res) => {
+
 });
 
 app.post('/api/v2/draft', async (req, res) => {
