@@ -1,5 +1,5 @@
 const PORT=process.env.PORT||4040;
-const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
+const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon:mastodon@localhost:5432/mastodon_production';
 const fs=require('fs');
 const pg=require('pg');
 const express=require('express');
@@ -29,6 +29,7 @@ app.get('/api/v2/extension', (req, res) => {
     let extensions={
         "version":"show extension version.",
         "poll":"request poll.",
+        "vote":"vote.",
         "draft":"toot draft."
     };
     res.json(extensions);
@@ -38,7 +39,7 @@ app.get('/api/v2/extension', (req, res) => {
 app.post('/api/v2/poll', async (req, res) => {
     const title=req.body.title||'';
     const choices=req.body.choices||[];
-    const limit=parseInt(req.body.limit)||0;
+    const limit=parseInt(req.body.limit)|0;
     const type=req.body.type||'bar';
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
@@ -87,7 +88,7 @@ app.post('/api/v2/poll', async (req, res) => {
 });
 
 app.get('/api/v2/poll', async (req, res) => {
-    const id=req.query.id;
+    const id=parseInt(req.query.id, 10);
     if (!id) {
         res.end();
     }
@@ -96,7 +97,7 @@ app.get('/api/v2/poll', async (req, res) => {
     const pollRange=await client.query(
         'SELECT last_value FROM polls_id_seq'
     );
-    if (id<1 ||| id>pollRange.rows[0].last_value) {
+    if (id<1 || id>pollRange.rows[0].last_value) {
         res.end();
     }
     const pollData=await client.query(
@@ -116,8 +117,53 @@ app.get('/api/v2/poll', async (req, res) => {
     res.end();
 });
 
-app.patch('/api/v2/vote', async (req, res) => {
+app.post('/api/v2/vote', async (req, res) => {
+    const polls_id=req.body.poll|0;
+    const choice_id=req.body.choice|0;
+    const type=req.body.type||"one";//one, any, number, text.
+    const token=(req.get('Authorization')||'').substring(7);
 
+    //check if there are valid parameters.
+    if (!(polls_id&&choice_id&&token)) {
+        res.json({"error":"Invalid parameters."});
+    }
+    const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    const pollData=await client.query(
+        'SELECT * FROM polls WHERE id=$1',
+        [polls_id]
+    );
+    // a vote of a user by the poll.
+    const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
+        [account_id,poll_id]
+    );
+    // a vote of a user by the poll and choice.
+    const voubpac=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2 AND choice_id=$3',
+        [account_id,poll_id,choice_id]
+    );
+
+    let vote;
+    switch (type) {
+        case "one":
+        default:
+            //search if the account already voted on the poll.
+            if (voubp.rows.length==0) {
+                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,type,mutable) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+                    polls_id, account_id, choice_id, type, false
+                );
+            } else {
+                res.json({"error": "you already voted."});
+            }
+            break;
+/*      case "any":
+            break;
+        case "number":
+            break;
+        case "text":
+            break;
+*/
+    }
+    res.json(createJsonForVote(vote.rows[0]));
+    res.end();
 });
 
 app.post('/api/v2/draft', async (req, res) => {
@@ -158,7 +204,7 @@ app.listen(PORT, (err) => {
 
 function createJsonForPoll(pollData,choicesData) {
     return {
-        "id":pollData.id,
+        "id": pollData.id,
         "limit": pollData.time_limit,
         "meta": {
             "title": pollData.title,
@@ -169,5 +215,18 @@ function createJsonForPoll(pollData,choicesData) {
         "type": "poll",
         "url": pollData.url,
         "uri": pollData.uri
+    };
+}
+function createJsonForVote(voteData) {
+    return {
+        "id": voteData.id,
+        "meta": {
+            "type": voteData.type,
+            "polls_id": voteData.polls_id,
+            "choice_id": voteData.choice_id,
+            "mutable": voteData.mutable
+        },
+        "created_at": voteData.created_at,
+        "type": "poll"
     };
 }
