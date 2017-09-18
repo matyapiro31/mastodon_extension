@@ -14,6 +14,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 /* pg setting. */
 var client=new pg.Client(DATABASE_URL);
+var isConnected=false;
 /*
     reddit, poll, timer, draft, stylesheet, call
 */
@@ -45,22 +46,26 @@ app.post('/api/v2/poll', async (req, res) => {
     const choices_id=new Array();
     const choices_data=new Array();
 
-    await client.connect();
+    if (!isConnected) {
+        await client.connect();
+        isConnected=true;
+    }
     //get Account ID.
-    const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
-    console.log(account_id.rows.length===0?"Invalid AccessToken.":"");
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    console.log(accountData.rows.length===0?"Invalid AccessToken.":"");
     //check if parameter is valid.
     if (!Array.isArray(choices)) {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
         return 0;
-    } else if (account_id.rows.length===0) {
+    } else if (accountData.rows.length===0) {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
         return 0;
     }
+    const account_id=accountData.rows[0].resource_owner_id;
     //set choices value.
     for (let i=0;i<choices.length;i++) {
         if ((typeof choices[i])!=="string") {
@@ -81,7 +86,7 @@ app.post('/api/v2/poll', async (req, res) => {
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
         'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
-        [title, time_limit, type, account_id.rows[0].id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
+        [title, time_limit, type, account_id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choices_data));
     res.end();
@@ -92,7 +97,10 @@ app.get('/api/v2/poll', async (req, res) => {
     if (!id) {
         res.end();
     }
-    await client.connect();
+    if (!isConnected) {
+            await client.connect();
+            isConnected=true;
+    }
     //validate if id is exists.
     const pollRange=await client.query(
         'SELECT last_value FROM polls_id_seq'
@@ -123,22 +131,42 @@ app.post('/api/v2/vote', async (req, res) => {
     const type=req.body.type||"one";//one, any, number, text.
     const token=(req.get('Authorization')||'').substring(7);
 
+    if (!isConnected) {
+        await client.connect();
+        isConnected=true;
+    }
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
         res.json({"error":"Invalid parameters."});
+        res.end();
     }
-    const account_id=await client.query('SELECT id FROM  oauth_access_tokens WHERE token=$1', [token]);
+
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountData.rows.length===0) {
+        res.json({"error":"Invalid AccessToken."});
+        res.end();
+    }
+    const account_id=accountData.rows[0].resource_owner_id;
     const pollData=await client.query(
         'SELECT * FROM polls WHERE id=$1',
         [polls_id]
     );
+    const choiceData=await client.query(
+        'SELECT * FROM choices WHERE id=$1',
+        [choice_id]
+    );
+    if (pollData.rows.length===0) {
+        res.json({"error":"Wrong poll id."});
+    } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
+        res.json({"error":"Wrong choice id."});
+    }
     // a vote of a user by the poll.
     const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
-        [account_id,poll_id]
+        [account_id,polls_id]
     );
     // a vote of a user by the poll and choice.
     const voubpac=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2 AND choice_id=$3',
-        [account_id,poll_id,choice_id]
+        [account_id,polls_id,choice_id]
     );
 
     let vote;
@@ -148,10 +176,14 @@ app.post('/api/v2/vote', async (req, res) => {
             //search if the account already voted on the poll.
             if (voubp.rows.length==0) {
                 vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,type,mutable) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-                    polls_id, account_id, choice_id, type, false
+                    [polls_id, account_id, choice_id, type, false]
                 );
+                let v=choiceData.rows[0].vote+1;
+                await client.query('INSERT INTO choices (vote) VALUES ($1)', [v]);
             } else {
                 res.json({"error": "you already voted."});
+                res.end();
+                return 503;
             }
             break;
 /*      case "any":

@@ -31,5 +31,5 @@ CREATE TABLE votes (
     type text DEFAULT 'one',
     created_at timestamp NOT NULL DEFAULT (now())::timestamp
 );
-CREATE SEQUENCE votes_id_seq OWNED BY votes;
+CREATE SEQUENCE votes_id_seq OWNED BY votes.id;
 ALTER TABLE votes ALTER COLUMN id SET DEFAULT nextval('votes_id_seq');
