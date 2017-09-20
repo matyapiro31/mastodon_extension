@@ -45,10 +45,14 @@ app.post('/api/v2/poll', async (req, res) => {
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
     const choices_data=new Array();
+    const mutable=(!!req.body.mutable)||false;
 
     if (!isConnected) {
         await client.connect();
         isConnected=true;
+    } else {
+        client=new pg.Client(DATABASE_URL);
+        await client.connect();
     }
     //get Account ID.
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
@@ -58,12 +62,12 @@ app.post('/api/v2/poll', async (req, res) => {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
-        return 0;
+        return 503;
     } else if (accountData.rows.length===0) {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
-        return 0;
+        return 503;
     }
     const account_id=accountData.rows[0].resource_owner_id;
     //set choices value.
@@ -85,8 +89,8 @@ app.post('/api/v2/poll', async (req, res) => {
     //set time limit as unix time.
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
-        'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7) RETURNING *',
-        [title, time_limit, type, account_id,choices_id,"/system/media_attachments/poll/"+(new Date().getTime())+"0","tag:example.com"]);
+        'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri,mutable) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7,$8) RETURNING *',
+        [title, time_limit, type, account_id, choices_id, "/system/media_attachments/poll/"+(new Date().getTime())+"0", "tag:example.com", mutable]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choices_data));
     res.end();
@@ -100,7 +104,11 @@ app.get('/api/v2/poll', async (req, res) => {
     if (!isConnected) {
             await client.connect();
             isConnected=true;
+    } else {
+        client=new pg.Client(DATABASE_URL);
+        await client.connect();
     }
+
     //validate if id is exists.
     const pollRange=await client.query(
         'SELECT last_value FROM polls_id_seq'
@@ -134,17 +142,23 @@ app.post('/api/v2/vote', async (req, res) => {
     if (!isConnected) {
         await client.connect();
         isConnected=true;
+    } else {
+       client=new pg.Client(DATABASE_URL);
+       await client.connect();
     }
+
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
         res.json({"error":"Invalid parameters."});
         res.end();
+        return 503;
     }
 
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     if (accountData.rows.length===0) {
         res.json({"error":"Invalid AccessToken."});
         res.end();
+        return 503;
     }
     const account_id=accountData.rows[0].resource_owner_id;
     const pollData=await client.query(
@@ -157,8 +171,12 @@ app.post('/api/v2/vote', async (req, res) => {
     );
     if (pollData.rows.length===0) {
         res.json({"error":"Wrong poll id."});
+        res.end();
+        return 503;
     } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
         res.json({"error":"Wrong choice id."});
+        res.end();
+        return 503;
     }
     // a vote of a user by the poll.
     const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
@@ -175,8 +193,8 @@ app.post('/api/v2/vote', async (req, res) => {
         default:
             //search if the account already voted on the poll.
             if (voubp.rows.length==0) {
-                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,type,mutable) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-                    [polls_id, account_id, choice_id, type, false]
+                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,type) VALUES ($1,$2,$3,$4) RETURNING *',
+                    [polls_id, account_id, choice_id, type]
                 );
                 let v=choiceData.rows[0].vote+1;
                 await client.query('INSERT INTO choices (vote) VALUES ($1)', [v]);
