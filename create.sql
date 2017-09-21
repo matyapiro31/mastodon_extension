@@ -15,7 +15,8 @@ CREATE TABLE polls (
 CREATE TABLE choices (
     id int NOT NULL;
     content text NOT NULL DEFAULT '',
-    vote int DEFAULT 0
+    vote int DEFAULT 0,
+    vote_type text DEFAULT 'one'
 );
 -- sequence for poll
 CREATE SEQUENCE polls_id_seq OWNED BY polls.id;
@@ -28,7 +29,7 @@ CREATE TABLE votes (
     account_id int NOT NULL,
     polls_id bigint NOT NULL,
     choice_id int NOT NULL,
-    type text DEFAULT 'one',
+    data text DEFAULT '',
     created_at timestamp NOT NULL DEFAULT (now())::timestamp
 );
 CREATE SEQUENCE votes_id_seq OWNED BY votes.id;

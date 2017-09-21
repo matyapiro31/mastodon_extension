@@ -46,6 +46,7 @@ app.post('/api/v2/poll', async (req, res) => {
     const choices_id=new Array();
     const choices_data=new Array();
     const mutable=(!!req.body.mutable)||false;
+    const vote_type=req.body.vote_type||[];
 
     if (!isConnected) {
         await client.connect();
@@ -136,7 +137,8 @@ app.get('/api/v2/poll', async (req, res) => {
 app.post('/api/v2/vote', async (req, res) => {
     const polls_id=req.body.poll|0;
     const choice_id=req.body.choice|0;
-    const type=req.body.type||"one";//one, any, number, text.
+    const type="one";//one, any, number, text.
+    const data=req.body.data||"";
     const token=(req.get('Authorization')||'').substring(7);
 
     if (!isConnected) {
@@ -193,8 +195,8 @@ app.post('/api/v2/vote', async (req, res) => {
         default:
             //search if the account already voted on the poll.
             if (voubp.rows.length==0) {
-                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,type) VALUES ($1,$2,$3,$4) RETURNING *',
-                    [polls_id, account_id, choice_id, type]
+                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
+                    [polls_id, account_id, choice_id,data]
                 );
                 let v=choiceData.rows[0].vote+1;
                 await client.query('INSERT INTO choices (vote) VALUES ($1)', [v]);
@@ -259,7 +261,8 @@ function createJsonForPoll(pollData,choicesData) {
         "meta": {
             "title": pollData.title,
             "type": pollData.type,
-            "choices": choicesData
+            "choices": choicesData,
+            "mutable": pollData.mutable
         },
         "created_at": pollData.created_at,
         "type": "poll",
@@ -271,7 +274,6 @@ function createJsonForVote(voteData) {
     return {
         "id": voteData.id,
         "meta": {
-            "type": voteData.type,
             "polls_id": voteData.polls_id,
             "choice_id": voteData.choice_id,
             "mutable": voteData.mutable

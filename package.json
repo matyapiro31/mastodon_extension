@@ -16,8 +16,8 @@
   "main": "test.js",
   "devDependencies": {},
   "scripts": {
-    "test": "node test-test.js",
-    "start": "node test.js"
+    "start": "source mastodon.env&&node test.js",
+    "createsql": "source mastodon.env&&psql -f create.sql -U ${DB_USER:-mastodon}"
   },
   "keywords": [
     "mastodon"
