@@ -1,14 +1,9 @@
 {
   "dependencies": {
-    "abcjs": "^0.0.2",
     "body-parser": "^1.17.2",
     "cookie-parser": "^1.4.3",
     "express": "^4.15.4",
-    "jssip": "^3.0.15",
-    "katex": "^0.8.3",
-    "pg": "^7.3.0",
-    "showdown": "^1.7.3",
-    "xmlhttprequest": "^1.8.0"
+    "pg": "^7.3.0"
   },
   "name": "mastodon_extension",
   "version": "1.0.0",
@@ -16,8 +11,8 @@
   "main": "test.js",
   "devDependencies": {},
   "scripts": {
-    "start": "source mastodon.env&&node test.js",
-    "createsql": "source mastodon.env&&psql -f create.sql -U ${DB_USER:-mastodon}"
+    "start": "eval \"$(cat mastodon.env)\"&&node test.js",
+    "createsql": "eval \"$(mastodon.env)\"&&psql -f create.sql -U ${DB_USER:-mastodon}"
   },
   "keywords": [
     "mastodon"

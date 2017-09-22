@@ -63,12 +63,19 @@ app.post('/api/v2/poll', async (req, res) => {
         res.status(400);
         res.send('Invalid object type: choices[].');
         res.end();
-        return 503;
+        return 400;
     } else if (accountData.rows.length===0) {
         res.status(400);
-        res.send('Invalid object type: choices[].');
+        res.send('Invalid AccessToken.');
         res.end();
-        return 503;
+        return 400;
+    } else if (!Array.isArray(vote_type)) {
+        res.status(400);
+        res.send('Invalid object type: vote_type[].');
+        res.end();
+        return 400;
+    } else if (vote_type.length!==0&&vote_type.length!==choices.length) {
+        console.log('vote type is less than choices.Ignoring the latter one.');
     }
     const account_id=accountData.rows[0].resource_owner_id;
     //set choices value.
@@ -78,12 +85,13 @@ app.post('/api/v2/poll', async (req, res) => {
             res.send('Invalid parameter: choices.');
             res.end();
         } else {
-            const ret=await client.query('INSERT INTO choices (content) VALUES ($1) RETURNING *', [choices[i]]);
+            const ret=await client.query('INSERT INTO choices (content,vote_type) VALUES ($1,$2) RETURNING *', [choices[i],vote_type[i]||"one"]);
             choices_id.push(ret.rows[0].id);
             choices_data.push({
-                content: ret.rows[0].content,
-                id: ret.rows[0].id,
-                vote: ret.rows[0].vote
+                "content": ret.rows[0].content,
+                "id": ret.rows[0].id,
+                "vote": ret.rows[0].vote,
+                "vote_type": ret.rows[0].vote_type
             });
         }
     }
@@ -91,7 +99,7 @@ app.post('/api/v2/poll', async (req, res) => {
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
         'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri,mutable) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7,$8) RETURNING *',
-        [title, time_limit, type, account_id, choices_id, "/system/media_attachments/poll/"+(new Date().getTime())+"0", "tag:example.com", mutable]);
+        [title, time_limit, type, account_id, choices_id, '/system/media_attachments/poll/'+(new Date().getTime())+"0", 'tag:example.com', mutable]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choices_data));
     res.end();
@@ -137,8 +145,7 @@ app.get('/api/v2/poll', async (req, res) => {
 app.post('/api/v2/vote', async (req, res) => {
     const polls_id=req.body.poll|0;
     const choice_id=req.body.choice|0;
-    const type="one";//one, any, number, text.
-    const data=req.body.data||"";
+    const data=req.body.data||'';
     const token=(req.get('Authorization')||'').substring(7);
 
     if (!isConnected) {
@@ -151,16 +158,18 @@ app.post('/api/v2/vote', async (req, res) => {
 
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
+        res.status(400);
         res.json({"error":"Invalid parameters."});
         res.end();
-        return 503;
+        return 400;
     }
 
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     if (accountData.rows.length===0) {
+        res.status(400);
         res.json({"error":"Invalid AccessToken."});
         res.end();
-        return 503;
+        return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
     const pollData=await client.query(
@@ -174,12 +183,13 @@ app.post('/api/v2/vote', async (req, res) => {
     if (pollData.rows.length===0) {
         res.json({"error":"Wrong poll id."});
         res.end();
-        return 503;
+        return 400;
     } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
         res.json({"error":"Wrong choice id."});
         res.end();
-        return 503;
+        return 400;
     }
+    const type=choiceData.rows[0].vote_type.toString()||'one'; //one, any, number, text.
     // a vote of a user by the poll.
     const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
         [account_id,polls_id]
@@ -191,26 +201,31 @@ app.post('/api/v2/vote', async (req, res) => {
 
     let vote;
     switch (type) {
-        case "one":
+        case 'one':
         default:
-            //search if the account already voted on the poll.
+            // only select one answer for polls. cannot mix with any.
+            // search if the account already voted on the poll.
             if (voubp.rows.length==0) {
                 vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
                     [polls_id, account_id, choice_id,data]
                 );
                 let v=choiceData.rows[0].vote+1;
-                await client.query('INSERT INTO choices (vote) VALUES ($1)', [v]);
+                await client.query('UPDATE choices SET vote=$1 WHERE id=$2', [v,choice_id]);
             } else {
+                res.status(400);
                 res.json({"error": "you already voted."});
                 res.end();
-                return 503;
+                return 400;
             }
             break;
-/*      case "any":
+/*      case 'any':
+            // can select all you like.cannot mix with one.
             break;
-        case "number":
+        case 'number':
+            // answer the number like age, year.can mix with one|any type.cannot mix with text.
             break;
-        case "text":
+        case 'text':
+            // answer and send text.can mix with one|any type.cannot mix with number.
             break;
 */
     }
@@ -275,10 +290,9 @@ function createJsonForVote(voteData) {
         "id": voteData.id,
         "meta": {
             "polls_id": voteData.polls_id,
-            "choice_id": voteData.choice_id,
-            "mutable": voteData.mutable
+            "choice_id": voteData.choice_id
         },
         "created_at": voteData.created_at,
-        "type": "poll"
+        "type": "vote"
     };
 }
