@@ -59,3 +59,4 @@ typings/
 
 .test.js.swp
 package-lock.json
+mastodon.env
