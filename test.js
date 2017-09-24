@@ -60,19 +60,13 @@ app.post('/api/v2/poll', async (req, res) => {
     console.log(accountData.rows.length===0?"Invalid AccessToken.":"");
     //check if parameter is valid.
     if (!Array.isArray(choices)) {
-        res.status(400);
-        res.send('Invalid object type: choices[].');
-        res.end();
+        fail2end(res, "error":"Invalid object type: choices[].", 400);
         return 400;
     } else if (accountData.rows.length===0) {
-        res.status(400);
-        res.send('Invalid AccessToken.');
-        res.end();
+        fail2end(res, "error":"Invalid AccessToken.", 400);
         return 400;
     } else if (!Array.isArray(vote_type)) {
-        res.status(400);
-        res.send('Invalid object type: vote_type[].');
-        res.end();
+        fail2end(res, "error":"Invalid object type: vote_type[].", 400);
         return 400;
     } else if (vote_type.length!==0&&vote_type.length!==choices.length) {
         console.log('vote type is less than choices.Ignoring the latter one.');
@@ -148,27 +142,18 @@ app.post('/api/v2/vote', async (req, res) => {
     const data=req.body.data||'';
     const token=(req.get('Authorization')||'').substring(7);
 
-    if (!isConnected) {
-        await client.connect();
-        isConnected=true;
-    } else {
-       client=new pg.Client(DATABASE_URL);
-       await client.connect();
-    }
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
 
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
-        res.status(400);
-        res.json({"error":"Invalid parameters."});
-        res.end();
+        fail2end(res, "error":"Invalid parameters.", 400);
         return 400;
     }
 
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     if (accountData.rows.length===0) {
-        res.status(400);
-        res.json({"error":"Invalid AccessToken."});
-        res.end();
+        fail2end(res, "error":"Invalid AccessToken.", 400);
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
@@ -181,12 +166,10 @@ app.post('/api/v2/vote', async (req, res) => {
         [choice_id]
     );
     if (pollData.rows.length===0) {
-        res.json({"error":"Wrong poll id."});
-        res.end();
+        fail2end(res, "Wrong poll id.", 400);
         return 400;
     } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
-        res.json({"error":"Wrong choice id."});
-        res.end();
+        fail2end(res, "error":"Wrong choice id.", 400);
         return 400;
     }
     const type=choiceData.rows[0].vote_type.toString()||'one'; //one, any, number, text.
@@ -199,51 +182,45 @@ app.post('/api/v2/vote', async (req, res) => {
         [account_id,polls_id,choice_id]
     );
 
-    let vote;
-    switch (type) {
-        case 'one':
-        default:
-            // only select one answer for polls. cannot mix with any.
-            // search if the account already voted on the poll.
-            if (voubp.rows.length==0) {
-                vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
-                    [polls_id, account_id, choice_id,data]
-                );
-                let v=choiceData.rows[0].vote+1;
-                await client.query('UPDATE choices SET vote=$1 WHERE id=$2', [v,choice_id]);
-            } else {
-                res.status(400);
-                res.json({"error": "you already voted."});
-                res.end();
-                return 400;
-            }
-            break;
-/*      case 'any':
-            // can select all you like.cannot mix with one.
-            break;
-        case 'number':
-            // answer the number like age, year.can mix with one|any type.cannot mix with text.
-            break;
-        case 'text':
-            // answer and send text.can mix with one|any type.cannot mix with number.
-            break;
-*/
+    if (pollData.rows[0].time_limit < new Date()) {
+        fail2end(res, "vote time limit is finished.", 400);
+        return 400;
     }
+    let vote;
+    // vote type for the way to select.
+
+    // one: only select one answer for polls. cannot mix with any.
+    // any: able to select all you like.cannot mix with one.
+    // search if the account already voted on the poll.
+    if ((type=='one' && voubp.rows.length==0) || (type=='any' && voubpac.rows.length==0)) {
+        vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
+            [polls_id, account_id, choice_id,data]
+        );
+        let v=choiceData.rows[0].vote+1;
+        await client.query('UPDATE choices SET vote=$1 WHERE id=$2', [v,choice_id]);
+    } else {
+        fail2end(res, "you already voted.", 400);
+        return 400;
+    }
+    // vote type for what sends with choice.plain, number, text.
+    await client.end();
     res.json(createJsonForVote(vote.rows[0]));
     res.end();
 });
 
 app.post('/api/v2/draft', async (req, res) => {
-    let draft=req.body.draft;
-    let in_reply_to_id=req.body.in_reply_to_id||'';
-    let media_ids=req.body.media_ids||[];
-    let sensitive=req.body.sensitive||false;
-    let spoiler_text=req.body.spoiler_text;
-    let visibility=req.body.visibility||'public';
+    const draft=req.body.draft;
+    const in_reply_to_id=req.body.in_reply_to_id||'';
+    const media_ids=req.body.media_ids||[];
+    const sensitive=req.body.sensitive||false;
+    const spoiler_text=req.body.spoiler_text;
+    const visibility=req.body.visibility||'public';
+    await client.end();
     res.end();
 });
 app.patch('/api/v2/draft', function(req, res) {
     //更新する処理を書く。
+    await client.end();
     res.end();
 });
 
@@ -295,4 +272,9 @@ function createJsonForVote(voteData) {
         "created_at": voteData.created_at,
         "type": "vote"
     };
+}
+function fail2end(res,err_str,code) {
+    res.status(code);
+    res.json({"error": err_str});
+    res.end();
 }
