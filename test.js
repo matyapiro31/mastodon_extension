@@ -1,5 +1,5 @@
 const PORT=process.env.PORT||4040;
-const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon:mastodon@localhost:5432/mastodon_production';
+const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
 const fs=require('fs');
 const pg=require('pg');
 const express=require('express');
@@ -14,9 +14,9 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 /* pg setting. */
 var client=new pg.Client(DATABASE_URL);
-var isConnected=false;
+
 /*
-    reddit, poll, timer, draft, stylesheet, call
+    poll, timer, draft, stylesheet, call
 */
 app.get('/api/v2/version', (req, res) => {
     let info={
@@ -44,29 +44,25 @@ app.post('/api/v2/poll', async (req, res) => {
     const type=req.body.type||'bar';
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
-    const choices_data=new Array();
+    const choicesData=new Array();
     const mutable=(!!req.body.mutable)||false;
     const vote_type=req.body.vote_type||[];
 
-    if (!isConnected) {
-        await client.connect();
-        isConnected=true;
-    } else {
-        client=new pg.Client(DATABASE_URL);
-        await client.connect();
-    }
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
     //get Account ID.
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     console.log(accountData.rows.length===0?"Invalid AccessToken.":"");
     //check if parameter is valid.
     if (!Array.isArray(choices)) {
-        fail2end(res, "error":"Invalid object type: choices[].", 400);
+        fail2end(res, "Invalid object type: choices[].", 400);
         return 400;
     } else if (accountData.rows.length===0) {
-        fail2end(res, "error":"Invalid AccessToken.", 400);
+        fail2end(res, "Invalid AccessToken.", 400);
         return 400;
     } else if (!Array.isArray(vote_type)) {
-        fail2end(res, "error":"Invalid object type: vote_type[].", 400);
+        fail2end(res, "Invalid object type: vote_type[].", 400);
         return 400;
     } else if (vote_type.length!==0&&vote_type.length!==choices.length) {
         console.log('vote type is less than choices.Ignoring the latter one.');
@@ -81,7 +77,7 @@ app.post('/api/v2/poll', async (req, res) => {
         } else {
             const ret=await client.query('INSERT INTO choices (content,vote_type) VALUES ($1,$2) RETURNING *', [choices[i],vote_type[i]||"one"]);
             choices_id.push(ret.rows[0].id);
-            choices_data.push({
+            choicesData.push({
                 "content": ret.rows[0].content,
                 "id": ret.rows[0].id,
                 "vote": ret.rows[0].vote,
@@ -95,7 +91,7 @@ app.post('/api/v2/poll', async (req, res) => {
         'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri,mutable) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7,$8) RETURNING *',
         [title, time_limit, type, account_id, choices_id, '/system/media_attachments/poll/'+(new Date().getTime())+"0", 'tag:example.com', mutable]);
     await client.end();
-    res.json(createJsonForPoll(ret.rows[0], choices_data));
+    res.json(createJsonForPoll(ret.rows[0], choicesData));
     res.end();
 });
 
@@ -104,13 +100,8 @@ app.get('/api/v2/poll', async (req, res) => {
     if (!id) {
         res.end();
     }
-    if (!isConnected) {
-            await client.connect();
-            isConnected=true;
-    } else {
-        client=new pg.Client(DATABASE_URL);
-        await client.connect();
-    }
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
 
     //validate if id is exists.
     const pollRange=await client.query(
@@ -147,13 +138,13 @@ app.post('/api/v2/vote', async (req, res) => {
 
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
-        fail2end(res, "error":"Invalid parameters.", 400);
+        fail2end(res, "Invalid parameters.", 400);
         return 400;
     }
 
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     if (accountData.rows.length===0) {
-        fail2end(res, "error":"Invalid AccessToken.", 400);
+        fail2end(res, "Invalid AccessToken.", 400);
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
@@ -169,9 +160,10 @@ app.post('/api/v2/vote', async (req, res) => {
         fail2end(res, "Wrong poll id.", 400);
         return 400;
     } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
-        fail2end(res, "error":"Wrong choice id.", 400);
+        fail2end(res, "Wrong choice id.", 400);
         return 400;
     }
+
     const type=choiceData.rows[0].vote_type.toString()||'one'; //one, any, number, text.
     // a vote of a user by the poll.
     const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
@@ -213,29 +205,39 @@ app.post('/api/v2/draft', async (req, res) => {
     const in_reply_to_id=req.body.in_reply_to_id||'';
     const media_ids=req.body.media_ids||[];
     const sensitive=req.body.sensitive||false;
-    const spoiler_text=req.body.spoiler_text;
+    const spoiler_text=req.body.spoiler_text||'';
     const visibility=req.body.visibility||'public';
+
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
     await client.end();
     res.end();
 });
-app.patch('/api/v2/draft', function(req, res) {
+
+app.patch('/api/v2/draft', async (req, res) => {
     //更新する処理を書く。
     await client.end();
     res.end();
 });
 
-//id|theme|url
+// params: id|theme|url
 app.get('/api/v2/stylesheet', async (req, res) => {
-    let token=req.get('Authorization').substring(7);
-    id=getIdByAccessToken();
-    if (id) {
-        console.log(req.query.theme);
-        await client.connect();
-      //  const ret = await client.query('SELECT * FROM statuses where id=$1',id);
+    const token=req.get('Authorization').substring(7);
+    console.log(req.query.theme);
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
 
-        await client.end();
-    }
+    await client.connect();
+  //  const ret = await client.query('SELECT * FROM statuses where id=$1',id);
+
+    await client.end();
     res.end();
+});
+
+// timer api to post
+app.get('/api/v2/timer', async (req, res) => {
+
 });
 
 app.listen(PORT, (err) => {
