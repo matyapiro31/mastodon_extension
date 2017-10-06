@@ -11,7 +11,7 @@
   "main": "test.js",
   "devDependencies": {},
   "scripts": {
-    "start": "eval \"$(cat mastodon.env 2>/dev/null)\"&&node test.js",
+    "start": "eval \"$(cat mastodon.env 2>/dev/null)\"&&node apiv2.js",
     "createsql": "eval \"$(mastodon.env 2>/dev/null)\"&&psql -f create.sql ${DATABASE_URL:-mastodon@localhost:5432/mastodon_production}"
   },
   "keywords": [
