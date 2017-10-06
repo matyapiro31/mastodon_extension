@@ -1,3 +1,4 @@
+'use strict';
 const PORT=process.env.PORT||4040;
 const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
 const fs=require('fs');
@@ -51,18 +52,26 @@ app.post('/api/v2/poll', async (req, res) => {
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+
     //get Account ID.
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
-    console.log(accountData.rows.length===0?"Invalid AccessToken.":"");
+    if (accountData.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
     //check if parameter is valid.
     if (!Array.isArray(choices)) {
-        fail2end(res, "Invalid object type: choices[].", 400);
+        fail2end(res, 'Invalid object type: choices[].', 400);
         return 400;
     } else if (accountData.rows.length===0) {
-        fail2end(res, "Invalid AccessToken.", 400);
+        fail2end(res, 'Invalid AccessToken.', 400);
         return 400;
     } else if (!Array.isArray(vote_type)) {
-        fail2end(res, "Invalid object type: vote_type[].", 400);
+        fail2end(res, 'Invalid object type: vote_type[].', 400);
         return 400;
     } else if (vote_type.length!==0&&vote_type.length!==choices.length) {
         console.log('vote type is less than choices.Ignoring the latter one.');
@@ -70,12 +79,12 @@ app.post('/api/v2/poll', async (req, res) => {
     const account_id=accountData.rows[0].resource_owner_id;
     //set choices value.
     for (let i=0;i<choices.length;i++) {
-        if ((typeof choices[i])!=="string") {
+        if ((typeof choices[i])!=='string') {
             res.status(400);
             res.send('Invalid parameter: choices.');
             res.end();
         } else {
-            const ret=await client.query('INSERT INTO choices (content,vote_type) VALUES ($1,$2) RETURNING *', [choices[i],vote_type[i]||"one"]);
+            const ret=await client.query('INSERT INTO choices (content,vote_type) VALUES ($1,$2) RETURNING *', [choices[i],vote_type[i]||'one']);
             choices_id.push(ret.rows[0].id);
             choicesData.push({
                 "content": ret.rows[0].content,
@@ -89,7 +98,7 @@ app.post('/api/v2/poll', async (req, res) => {
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
         'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri,mutable) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7,$8) RETURNING *',
-        [title, time_limit, type, account_id, choices_id, '/system/media_attachments/poll/'+(new Date().getTime())+"0", 'tag:example.com', mutable]);
+        [title, time_limit, type, account_id, choices_id, '/system/media_attachments/poll/'+(new Date().getTime())+'0', 'tag:example.com', mutable]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choicesData));
     res.end();
@@ -138,13 +147,18 @@ app.post('/api/v2/vote', async (req, res) => {
 
     //check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
-        fail2end(res, "Invalid parameters.", 400);
+        fail2end(res, 'Invalid parameters.', 400);
+        return 400;
+    }
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
         return 400;
     }
 
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
     if (accountData.rows.length===0) {
-        fail2end(res, "Invalid AccessToken.", 400);
+        fail2end(res, 'Invalid AccessToken.', 400);
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
@@ -157,10 +171,10 @@ app.post('/api/v2/vote', async (req, res) => {
         [choice_id]
     );
     if (pollData.rows.length===0) {
-        fail2end(res, "Wrong poll id.", 400);
+        fail2end(res, 'Wrong poll id.', 400);
         return 400;
     } else if (!pollData.rows[0].choices_id.includes(choice_id)) {
-        fail2end(res, "Wrong choice id.", 400);
+        fail2end(res, 'Wrong choice id.', 400);
         return 400;
     }
 
@@ -175,7 +189,7 @@ app.post('/api/v2/vote', async (req, res) => {
     );
 
     if (pollData.rows[0].time_limit < new Date()) {
-        fail2end(res, "vote time limit is finished.", 400);
+        fail2end(res, 'vote time limit is finished.', 400);
         return 400;
     }
     let vote;
@@ -191,7 +205,7 @@ app.post('/api/v2/vote', async (req, res) => {
         let v=choiceData.rows[0].vote+1;
         await client.query('UPDATE choices SET vote=$1 WHERE id=$2', [v,choice_id]);
     } else {
-        fail2end(res, "you already voted.", 400);
+        fail2end(res, 'you already voted.', 400);
         return 400;
     }
     // vote type for what sends with choice.plain, number, text.
@@ -201,35 +215,136 @@ app.post('/api/v2/vote', async (req, res) => {
 });
 
 app.post('/api/v2/draft', async (req, res) => {
-    const draft=req.body.draft;
-    const in_reply_to_id=req.body.in_reply_to_id||'';
-    const media_ids=req.body.media_ids||[];
+    const draft=(req.body.draft||'').substring(0,1000);
+    const in_reply_to_id=parseInt(req.body.in_reply_to_id)|null;
+    const _media_ids=req.body.media_ids||[];
     const sensitive=req.body.sensitive||false;
     const spoiler_text=req.body.spoiler_text||'';
     const visibility=req.body.visibility||'public';
+    const token=(req.get('Authorization')||'').substring(7);
 
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
+    if (_media_ids.length > 4) {
+        fail2end(res,'over 4 medias attached.', 502);
+        return 502;
+    }
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+    //get Account ID.
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountData.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resource_owner_id;
+    // check visibility value.
+    switch (visibility) {
+        case 'public':
+        case 'unlisted':
+        case 'private':
+        case 'direct':
+            break;
+        default:
+            visibility='public';
+    }
+    
+    let media_ids=new Array();
+    for (let i in _media_ids) {
+        if (!Number.isNaN(parseInt(_media_ids[i]))) {
+            media_ids.push(parseInt(_media_ids[i]));
+        }
+    }
+    
+    let draftData=await client.query('INSERT INTO drafts (account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+        [account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility]
+    );
     await client.end();
+    res.json(createJsonForDraft(draftData.rows[0]));
     res.end();
 });
 
 app.patch('/api/v2/draft', async (req, res) => {
-    //更新する処理を書く。
+    const draft_id=req.body.draft_id||0;
+    const draft=req.body.draft||'';
+    const token=(req.get('Authorization')||'').substring(7);
+
+    if (!draft_id) {
+        fail2end(res, 'draft id is not set.', 400);
+        return 400;
+    } else if (!draft) {
+        fail2end(res, 'draft data is empty.', 502);
+        return 502;
+    }
+
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+
+    //get Account ID.
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountData.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resource_owner_id;
+    const draft_accountData=await client.query('SELECET account_id FROM drafts WHERE id=$1',  [draft_id]);
+    if (draft_accountData.rows.length===0) {
+        fail2end(res, 'Wrong id for a draft.', 502);
+        return 502;
+    } else if (draft_accountData.rows[0].account_id!==account_id) {
+        fail2end(res, 'Incorrect account id for the draft.', 400);
+        return 400;
+    }
+    let draftData=await client.query('UPDATE drafts SET draft=$1 WHERE id=$2', [draft,draft_id]);
+    await client.end();
+    res.json(createJsonForDraft(draftData.rows[0]));
+    res.end();
+});
+
+app.get('/api/v2/draft', async (req, res) => {
+    const draft_id=req.query.id||0;
+    const token=(req.get('Authorization')||'').substring(7);
+    let draftData;
+
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
+    if (draft_id) { // get draft data of the exact id.
+        draftData=await client.query('SELECT * FROM drafts WHERE id=$1', [draft_id]);
+        res.json(createJsonForDraft(draftData.rows[0]));
+    } else if (token) { // get all draft data for the user.
+        const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+        if (accountData.rows.length===0) {
+            fail2end(res, 'Invalid AccessToken.', 400);
+            return 400;
+        }
+        const account_id=accountData.rows[0].resource_owner_id;
+        draftData=await client.query('SELECT * FROM drafts WHERE account_id=$1', [account_id]);
+        res.json(createJsonForDraftArray(draftData.rows, account_id));
+    } else {
+        fail2end(res, 'No data is set.', 400);
+        return 400;
+    }
     await client.end();
     res.end();
 });
 
-// params: id|theme|url
 app.get('/api/v2/stylesheet', async (req, res) => {
+    const theme=req.body.theme||'green';
+    const hue_degree=req.body.hue_degree|0;
     const token=req.get('Authorization').substring(7);
-    console.log(req.query.theme);
+
     client=new pg.Client(DATABASE_URL);
     await client.connect();
-
-    await client.connect();
-  //  const ret = await client.query('SELECT * FROM statuses where id=$1',id);
 
     await client.end();
     res.end();
@@ -251,6 +366,7 @@ app.listen(PORT, (err) => {
 function createJsonForPoll(pollData,choicesData) {
     return {
         "id": pollData.id,
+        "account_id": pollData.account_id,
         "limit": pollData.time_limit,
         "meta": {
             "title": pollData.title,
@@ -267,6 +383,7 @@ function createJsonForPoll(pollData,choicesData) {
 function createJsonForVote(voteData) {
     return {
         "id": voteData.id,
+        "account_id": voteData.account_id,
         "meta": {
             "polls_id": voteData.polls_id,
             "choice_id": voteData.choice_id
@@ -275,7 +392,47 @@ function createJsonForVote(voteData) {
         "type": "vote"
     };
 }
-function fail2end(res,err_str,code) {
+function createJsonForDraft(draftData) {
+    return {
+        "id": draftData.id,
+        "account_id": draftData.account_id,
+        "meta": {
+            "draft": draftData.draft,
+            "in_reply_to_id": draftData.in_reply_to_id,
+            "media_ids": draftData.media_ids,
+            "sensitive": draftData.sensitive,
+            "spoiler_text": draftData.spoiler_text,
+            "visibility": draftData.visibility
+        },
+        "type": "draft"
+    };
+}
+function createJsonForDrafts(draftDataArray, account_id) {
+    const ret={
+        "account_id": account_id,
+        "drafts": [],
+        "type": "drafts"
+    };
+    for (let draftData of draftDataArray) {
+        ret.drafts.push(
+            {
+                "id": draftData.id,
+                "account_id": draftData.account_id,
+                "meta": {
+                    "draft": draftData.draft,
+                    "in_reply_to_id": draftData.in_reply_to_id,
+                    "media_ids": draftData.media_ids,
+                    "sensitive": draftData.sensitive,
+                    "spoiler_text": draftData.spoiler_text,
+                    "visibility": draftData.visibility
+                },
+                "type": "draft"
+            }
+        );
+    }
+    return ret;
+}
+function fail2end(res, err_str, code) {
     res.status(code);
     res.json({"error": err_str});
     res.end();

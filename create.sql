@@ -7,7 +7,7 @@ CREATE TABLE polls (
     created_at timestamp NOT NULL DEFAULT (now())::timestamp ,
     type text NOT NULL DEFAULT 'bar',
     mutable boolean DEFAULT false,
-    choices_id int[] DEFAULT ARRAY[]::integer[],
+    choices_id int[] NOT NULL DEFAULT ARRAY[]::integer[],
     url text NOT NULL DEFAULT '',
     uri text NOT NULL DEFAULT ''
 );
@@ -34,3 +34,16 @@ CREATE TABLE votes (
 );
 CREATE SEQUENCE votes_id_seq OWNED BY votes.id;
 ALTER TABLE votes ALTER COLUMN id SET DEFAULT nextval('votes_id_seq');
+-- table for draft
+CREATE TABLE drafts (
+    id int NOT NULL,
+    account_id int NOT NULL,
+    draft text NOT NULL DEFAULT '',
+    in_reply_to_id int,
+    media_ids int[] DEFAULT ARRAY[]::integer[],
+    sensitive boolean DEFAULT false,
+    spoiler_text text NOT NULL DEFAULT '',
+    visibility text NOT NULL DEFAULT 'public'
+);
+CREATE SEQUENCE drafts_id_seq OWNED BY drafts.id;
+ALTER TABLE draft ALTER COLUMN id SET DEFAULT nextval('drafts_id_seq');
