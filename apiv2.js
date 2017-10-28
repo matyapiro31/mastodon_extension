@@ -270,7 +270,7 @@ app.post('/api/v2/draft', async (req, res) => {
     res.end();
 });
 
-app.patch('/api/v2/draft', async (req, res) => {
+app.post('/api/v2/draft/update', async (req, res) => {
     const draft_id=req.body.draft_id||0;
     const draft=req.body.draft||'';
     const token=(req.get('Authorization')||'').substring(7);
@@ -377,18 +377,14 @@ app.delete('/api/v2/draft', async (req, res) => {
 });
 
 app.get('/api/v2/stylesheet', async (req, res) => {
-    const theme=req.body.theme||'green';
+    const theme=req.body.theme;
     const hue_degree=req.body.hue_degree|0;
-    let style='';
-
-    client=new pg.Client(DATABASE_URL);
-    await client.connect();
-
-    fs.readFile(CSS_PATH, {encoding: 'utf8'}, (err, content) => {
-        style=content;
-    });
     
-    await client.end();
+    if (theme) {
+        CSS_PATH=CSS_PATH.replace(/\.css/, '-'+theme+'.css');
+    }
+    const style=fs.readFileSync(CSS_PATH, 'utf8');
+    res.send(style);
     res.end();
 });
 

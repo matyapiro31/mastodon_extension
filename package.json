@@ -8,11 +8,12 @@
   "name": "mastodon_extension",
   "version": "1.0.0",
   "description": "mastodon extensive api package.",
-  "main": "test.js",
+  "main": "apiv2.js",
   "devDependencies": {},
   "scripts": {
     "start": "eval \"$(cat mastodon.env 2>/dev/null)\"&&node apiv2.js",
-    "createsql": "eval \"$(mastodon.env 2>/dev/null)\"&&psql -f create.sql ${DATABASE_URL:-mastodon@localhost:5432/mastodon_production}"
+    "createsql": "eval \"$(mastodon.env 2>/dev/null)\"&&psql -f create.sql ${DATABASE_URL:-mastodon@localhost:5432/mastodon_production}",
+    "test": "eval \"$(mastodon.env 2>/dev/null)\"&&node test-apiv2.js"
   },
   "keywords": [
     "mastodon"
