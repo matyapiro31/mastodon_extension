@@ -43,7 +43,8 @@ CREATE TABLE drafts (
     media_ids int[] DEFAULT ARRAY[]::integer[],
     sensitive boolean DEFAULT false,
     spoiler_text text NOT NULL DEFAULT '',
-    visibility text NOT NULL DEFAULT 'public'
+    visibility text NOT NULL DEFAULT 'public',
+    timer timestamp
 );
 CREATE SEQUENCE drafts_id_seq OWNED BY drafts.id;
 ALTER TABLE draft ALTER COLUMN id SET DEFAULT nextval('drafts_id_seq');

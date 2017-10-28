@@ -1,6 +1,7 @@
 'use strict';
 const PORT=process.env.PORT||4040;
 const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
+const CSS_PATH=process.env.CSS_PATH||'./mastodon.css';
 const fs=require('fs');
 const pg=require('pg');
 const express=require('express');
@@ -221,6 +222,7 @@ app.post('/api/v2/draft', async (req, res) => {
     const sensitive=req.body.sensitive||false;
     const spoiler_text=req.body.spoiler_text||'';
     const visibility=req.body.visibility||'public';
+    const timer=req.body.timer|0;
     const token=(req.get('Authorization')||'').substring(7);
 
     client=new pg.Client(DATABASE_URL);
@@ -252,14 +254,14 @@ app.post('/api/v2/draft', async (req, res) => {
         default:
             visibility='public';
     }
-    
+
     let media_ids=new Array();
     for (let i in _media_ids) {
         if (!Number.isNaN(parseInt(_media_ids[i]))) {
             media_ids.push(parseInt(_media_ids[i]));
         }
     }
-    
+
     let draftData=await client.query('INSERT INTO drafts (account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility]
     );
@@ -338,21 +340,56 @@ app.get('/api/v2/draft', async (req, res) => {
     res.end();
 });
 
-app.get('/api/v2/stylesheet', async (req, res) => {
-    const theme=req.body.theme||'green';
-    const hue_degree=req.body.hue_degree|0;
-    const token=req.get('Authorization').substring(7);
+app.delete('/api/v2/draft', async (req, res) => {
+    const draft_id=req.query.id|0;
+    const token=(req.get('Authorization')||'').substring(7);
+
+    if (!draft_id) {
+        fail2end(res, 'draft id is not set.', 400);
+        return 400;
+    }
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
 
     client=new pg.Client(DATABASE_URL);
     await client.connect();
+
+    const accountData=await client.query('SELECT resource_owner_id FROM oauth_access_tokens WHERE token=$1', [token]);
+    if (accountData.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resource_owner_id;
+    draftData=await client.query('SELECT * FROM drafts WHERE id=$1 AND account_id=$2', [draft_id,account_id]);
+    if (draftData.rows.length===0) {
+        fail2end(res, 'These draft data are no longer exist.', 502);
+        return 502;
+    } else {
+        await client.query('DELETE FROM drafts WHERE id=$1', [draft_id]);
+        res.json(createJsonForMessage('delete', 'draft id:'+ draft_id+' is deleted.', 'success'));
+    }
 
     await client.end();
     res.end();
 });
 
-// timer api to post
-app.get('/api/v2/timer', async (req, res) => {
+app.get('/api/v2/stylesheet', async (req, res) => {
+    const theme=req.body.theme||'green';
+    const hue_degree=req.body.hue_degree|0;
+    let style='';
 
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
+    fs.readFile(CSS_PATH, {encoding: 'utf8'}, (err, content) => {
+        style=content;
+    });
+    
+    await client.end();
+    res.end();
 });
 
 app.listen(PORT, (err) => {
@@ -432,8 +469,21 @@ function createJsonForDrafts(draftDataArray, account_id) {
     }
     return ret;
 }
-function fail2end(res, err_str, code) {
+function createJsonForMessage(type, message, status) {
+    return {
+        "type": type,
+        "message": message,
+        "status": status
+    };
+}
+function fail2end(res, errorMessage, code) {
     res.status(code);
-    res.json({"error": err_str});
+    res.json(
+        {
+            "code": code,
+            "meta": createJsonForMessage('error', errorMessage, 'failed'),
+            "type": "message"
+        }
+    );
     res.end();
 }
