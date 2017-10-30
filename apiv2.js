@@ -262,16 +262,16 @@ app.post('/api/v2/draft', async (req, res) => {
         }
     }
 
-    let draftData=await client.query('INSERT INTO drafts (account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-        [account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility]
+    let draftData=await client.query('INSERT INTO drafts (account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility,timer) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+        [account_id,draft,in_reply_to_id,media_ids,sensitive,spoiler_text,visibility,timer]
     );
     await client.end();
     res.json(createJsonForDraft(draftData.rows[0]));
     res.end();
 });
 
-app.post('/api/v2/draft/update', async (req, res) => {
-    const draft_id=req.body.draft_id||0;
+app.patch('/api/v2/draft', async (req, res) => {
+    const draft_id=req.body.id|0;
     const draft=req.body.draft||'';
     const token=(req.get('Authorization')||'').substring(7);
 
@@ -298,22 +298,22 @@ app.post('/api/v2/draft/update', async (req, res) => {
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
-    const draft_accountData=await client.query('SELECET account_id FROM drafts WHERE id=$1',  [draft_id]);
+    const draft_accountData=await client.query('SELECT account_id FROM drafts WHERE id=$1',  [draft_id]);
     if (draft_accountData.rows.length===0) {
         fail2end(res, 'Wrong id for a draft.', 502);
         return 502;
-    } else if (draft_accountData.rows[0].account_id!==account_id) {
+    } else if (draft_accountData.rows[0].account_id!=account_id) {
         fail2end(res, 'Incorrect account id for the draft.', 400);
         return 400;
     }
-    let draftData=await client.query('UPDATE drafts SET draft=$1 WHERE id=$2', [draft,draft_id]);
+    let draftData=await client.query('UPDATE drafts SET draft=$1 WHERE id=$2 RETURNING *', [draft,draft_id]);
     await client.end();
     res.json(createJsonForDraft(draftData.rows[0]));
     res.end();
 });
 
 app.get('/api/v2/draft', async (req, res) => {
-    const draft_id=req.query.id||0;
+    const draft_id=req.query.id|0;
     const token=(req.get('Authorization')||'').substring(7);
     let draftData;
 
@@ -331,7 +331,7 @@ app.get('/api/v2/draft', async (req, res) => {
         }
         const account_id=accountData.rows[0].resource_owner_id;
         draftData=await client.query('SELECT * FROM drafts WHERE account_id=$1', [account_id]);
-        res.json(createJsonForDraftArray(draftData.rows, account_id));
+        res.json(createJsonForDrafts(draftData.rows, account_id));
     } else {
         fail2end(res, 'No data is set.', 400);
         return 400;
@@ -341,7 +341,7 @@ app.get('/api/v2/draft', async (req, res) => {
 });
 
 app.delete('/api/v2/draft', async (req, res) => {
-    const draft_id=req.query.id|0;
+    const draft_id=req.body.id|0;
     const token=(req.get('Authorization')||'').substring(7);
 
     if (!draft_id) {
@@ -363,13 +363,13 @@ app.delete('/api/v2/draft', async (req, res) => {
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
-    draftData=await client.query('SELECT * FROM drafts WHERE id=$1 AND account_id=$2', [draft_id,account_id]);
+    let draftData=await client.query('SELECT * FROM drafts WHERE id=$1 AND account_id=$2', [draft_id,account_id]);
     if (draftData.rows.length===0) {
         fail2end(res, 'These draft data are no longer exist.', 502);
         return 502;
     } else {
         await client.query('DELETE FROM drafts WHERE id=$1', [draft_id]);
-        res.json(createJsonForMessage('delete', 'draft id:'+ draft_id+' is deleted.', 'success'));
+        res.json(createJsonForMessage('delete', 'draft id='+ draft_id+' is deleted.', 'success'));
     }
 
     await client.end();
@@ -435,7 +435,8 @@ function createJsonForDraft(draftData) {
             "media_ids": draftData.media_ids,
             "sensitive": draftData.sensitive,
             "spoiler_text": draftData.spoiler_text,
-            "visibility": draftData.visibility
+            "visibility": draftData.visibility,
+            "timer": draftData.timer
         },
         "type": "draft"
     };
@@ -457,7 +458,8 @@ function createJsonForDrafts(draftDataArray, account_id) {
                     "media_ids": draftData.media_ids,
                     "sensitive": draftData.sensitive,
                     "spoiler_text": draftData.spoiler_text,
-                    "visibility": draftData.visibility
+                    "visibility": draftData.visibility,
+                    "timer": draftData.timer
                 },
                 "type": "draft"
             }
