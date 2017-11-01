@@ -2,11 +2,15 @@
 const PORT=process.env.PORT||4040;
 const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
 const CSS_PATH=process.env.CSS_PATH||'./mastodon.css';
+const DOMAIN=process.env.MASTODON_DOMAIN||'example.com';
 const fs=require('fs');
 const pg=require('pg');
+const https=require('https');
 const express=require('express');
 const app=express();
-const bodyParser = require('body-parser');
+const bodyParser=require('body-parser');
+const cookieParser=require('cookie-parser');
+
 process.on('unhandledRejection', console.dir);
 
 /*
@@ -14,6 +18,7 @@ process.on('unhandledRejection', console.dir);
 */
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cookieParser());
 /* pg setting. */
 var client=new pg.Client(DATABASE_URL);
 
@@ -30,10 +35,11 @@ app.get('/api/v2/version', (req, res) => {
 
 app.get('/api/v2/extension', (req, res) => {
     let extensions={
-        "version":"show extension version.",
-        "poll":"request poll.",
-        "vote":"vote.",
-        "draft":"toot draft."
+        "version": "show extension version.",
+        "poll": "request poll.",
+        "vote": "vote.",
+        "draft": "toot draft.",
+        "stylesheet": "change stylesheet with request color."
     };
     res.json(extensions);
     res.end();
@@ -99,7 +105,7 @@ app.post('/api/v2/poll', async (req, res) => {
     const time_limit=limit+Math.floor(new Date().getTime()/1000);
     const ret=await client.query(
         'INSERT INTO polls (title,time_limit,type,account_id,created_at,choices_id,url,uri,mutable) VALUES ($1,to_timestamp($2),$3,$4,now(),$5,$6,$7,$8) RETURNING *',
-        [title, time_limit, type, account_id, choices_id, '/system/media_attachments/poll/'+(new Date().getTime())+'0', 'tag:example.com', mutable]);
+        [title, time_limit, type, account_id, choices_id, `/system/media_attachments/poll/${new Date().getTime()}0`, 'tag:example.com', mutable]);
     await client.end();
     res.json(createJsonForPoll(ret.rows[0], choicesData));
     res.end();
@@ -217,12 +223,12 @@ app.post('/api/v2/vote', async (req, res) => {
 
 app.post('/api/v2/draft', async (req, res) => {
     const draft=(req.body.draft||'').substring(0,1000);
-    const in_reply_to_id=parseInt(req.body.in_reply_to_id)|null;
+    const in_reply_to_id=parseInt(req.body.in_reply_to_id)||null;
     const _media_ids=req.body.media_ids||[];
     const sensitive=req.body.sensitive||false;
     const spoiler_text=req.body.spoiler_text||'';
-    const visibility=req.body.visibility||'public';
-    const timer=req.body.timer|0;
+    let visibility=req.body.visibility||'public';
+    const timer=parseInt(req.body.timer)|0;
     const token=(req.get('Authorization')||'').substring(7);
 
     client=new pg.Client(DATABASE_URL);
@@ -268,6 +274,37 @@ app.post('/api/v2/draft', async (req, res) => {
     await client.end();
     res.json(createJsonForDraft(draftData.rows[0]));
     res.end();
+
+    //automatically post after time.
+    if (!timer) {
+        setTimeout(()=>{
+            const postData=querystring.stringify({
+                "status": draft.substring(0,500),
+                "in_reply_to_id": in_reply_to_id,
+                "sensitive": sensitive,
+                "spoiler_text": spoiler_text,
+                "visiblity": visibility
+            })+convertArrayToQueryString('media_ids', media_ids);
+            const options={
+                "hostname": DOMAIN,
+                "path": "/api/v1/statuses",
+                "method": "POST",
+                "timeout": 10,
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(postData)
+                }
+            };
+            const req_timer=https.request(options, (res_timer)=>{
+                res_timer.setEncoding('utf8');
+                res_timer.on('error' (e)=>{
+                    fail2end(res, 'Unexpected error happend.', res_timer.statusCode());
+                });
+            });
+            req_timer.write(postData);
+            req_timer.end();
+        }, timer);
+    }
 });
 
 app.patch('/api/v2/draft', async (req, res) => {
@@ -369,7 +406,7 @@ app.delete('/api/v2/draft', async (req, res) => {
         return 502;
     } else {
         await client.query('DELETE FROM drafts WHERE id=$1', [draft_id]);
-        res.json(createJsonForMessage('delete', 'draft id='+ draft_id+' is deleted.', 'success'));
+        res.json(createJsonForMessage('delete', `draft id=${draft_id} is deleted.`, 'success'));
     }
 
     await client.end();
@@ -381,7 +418,7 @@ app.get('/api/v2/stylesheet', async (req, res) => {
     const hue_degree=req.body.hue_degree|0;
     
     if (theme) {
-        CSS_PATH=CSS_PATH.replace(/\.css/, '-'+theme+'.css');
+        CSS_PATH=CSS_PATH.replace(/\.css/, `-${theme}.css`);
     }
     const style=fs.readFileSync(CSS_PATH, 'utf8');
     res.send(style);
@@ -484,4 +521,11 @@ function fail2end(res, errorMessage, code) {
         }
     );
     res.end();
+}
+function convertArrayToQueryString(key, valueArray) {
+    if (!Array.isArray(valueArray)) {
+        return '';
+    }
+    key=encodeURIComponent(key);
+    return `&${key}[]=${valueArray.toString()}`.replace(/,/g,`&${key}[]=`);
 }
