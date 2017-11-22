@@ -2,7 +2,6 @@
 const PORT=process.env.PORT||4040;
 const DATABASE_URL=process.env.DATABASE_URL||'postgresql://mastodon@localhost:5432/mastodon_production';
 const CSS_PATH=process.env.CSS_PATH||'./mastodon.css';
-const DOMAIN=process.env.MASTODON_DOMAIN||'example.com';
 const fs=require('fs');
 const pg=require('pg');
 const https=require('https');
@@ -13,18 +12,14 @@ const cookieParser=require('cookie-parser');
 
 process.on('unhandledRejection', console.dir);
 
-/*
-    express setting.
-*/
+// express setting.
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
-/* pg setting. */
+// pg setting.
 var client=new pg.Client(DATABASE_URL);
 
-/*
-    poll, timer, draft, stylesheet, call
-*/
+// poll, timer, draft, stylesheet, call
 app.get('/api/v2/version', (req, res) => {
     let info={
         "version":"1.0.0"
@@ -48,13 +43,13 @@ app.get('/api/v2/extension', (req, res) => {
 app.post('/api/v2/poll', async (req, res) => {
     const title=req.body.title||'';
     const choices=req.body.choices||[];
-    const limit=parseInt(req.body.limit)|0;
+    const limit=req.body.limit|0;
     const type=req.body.type||'bar';
+    const mutable=(!!req.body.mutable&&req.body.mutable!=='false')||false;
+    const vote_type=req.body.vote_type||[];
     const token=(req.get('Authorization')||'').substring(7);
     const choices_id=new Array();
     const choicesData=new Array();
-    const mutable=(!!req.body.mutable)||false;
-    const vote_type=req.body.vote_type||[];
 
     client=new pg.Client(DATABASE_URL);
     await client.connect();
@@ -111,48 +106,62 @@ app.post('/api/v2/poll', async (req, res) => {
     res.end();
 });
 
-app.get('/api/v2/poll', async (req, res) => {
-    const id=parseInt(req.query.id, 10);
+app.get(['/api/v2/poll', '/api/v2/poll/:id'], async (req, res) => {
+    const id=req.path=='/poll'? req.query.id: req.params.id||0;
+    const token=(req.get('Authorization')||'').substring(7);
     if (!id) {
-        res.end();
+        fail2end(res, 'No poll id is set.', 400);
+        return 400;
     }
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
     //validate if id is exists.
-    const pollRange=await client.query(
-        'SELECT last_value FROM polls_id_seq'
-    );
+    const pollRange=await client.query('SELECT last_value FROM polls_id_seq');
     if (id<1 || id>pollRange.rows[0].last_value) {
-        res.end();
+        fail2end(res, 'Id specified is over the sequence.', 400);
+        return 400;
     }
-    const pollData=await client.query(
-        'SELECT * FROM polls WHERE id=$1',
-        [id]
-    );
+    const pollData=await client.query('SELECT * FROM polls WHERE id=$1', [id]);
     const choicesData=new Array();
     for (let i in pollData.rows[0].choices_id) {
-        let choice=await client.query(
-                'SELECT * FROM choices WHERE id=$1',
-                [pollData.rows[0].choices_id[i]]
-        );
+        let choice=await client.query('SELECT * FROM choices WHERE id=$1', [pollData.rows[0].choices_id[i]]);
         choicesData.push(choice.rows[0]);
     }
+
+    // show embeded data with vote if user is the author of this poll.
+    if(token) {
+        const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+        if (accountData.rows.length!==1) {
+            fail2end(res, 'Invalid AccessToken.', 400);
+            return 400;
+        }
+        const account_id=accountData.rows[0].resource_owner_id;
+        if (pollData.rows[0].account_id!==account_id) {
+            fail2end(res, 'Wrong id for poll.', 400);
+            return 400;
+        }
+        // add json for user specified info.
+        const voteData=await client.query('SELECT id,polls_id,choice_id,data FROM votes WHERE polls_id=$1', [id]);
+        res.json(createJsonForPoll(pollData.rows[0], choicesData, voteData.rows));
+    } else {
+        res.json(createJsonForPoll(pollData.rows[0], choicesData));
+    }
+
     await client.end();
-    res.json(createJsonForPoll(pollData.rows[0], choicesData));
     res.end();
 });
 
 app.post('/api/v2/vote', async (req, res) => {
-    const polls_id=req.body.poll|0;
-    const choice_id=req.body.choice|0;
-    const data=req.body.data||'';
+    const polls_id=req.body.poll||0;
+    const choice_id=req.body.choice||0;
+    const data=(req.body.data||'').subtring(500);
     const token=(req.get('Authorization')||'').substring(7);
 
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
-    //check if there are valid parameters.
+    // check if there are valid parameters.
     if (!(polls_id&&choice_id&&token)) {
         fail2end(res, 'Invalid parameters.', 400);
         return 400;
@@ -185,7 +194,7 @@ app.post('/api/v2/vote', async (req, res) => {
         return 400;
     }
 
-    const type=choiceData.rows[0].vote_type.toString()||'one'; //one, any, number, text.
+    const type=choiceData.rows[0].vote_type.toString()||'one'; //one or any.
     // a vote of a user by the poll.
     const voubp=await client.query('SELECT * FROM votes WHERE account_id=$1 AND polls_id=$2',
         [account_id,polls_id]
@@ -199,43 +208,127 @@ app.post('/api/v2/vote', async (req, res) => {
         fail2end(res, 'vote time limit is finished.', 400);
         return 400;
     }
-    let vote;
+    let voteData;
     // vote type for the way to select.
 
     // one: only select one answer for polls. cannot mix with any.
     // any: able to select all you like.cannot mix with one.
     // search if the account already voted on the poll.
-    if ((type=='one' && voubp.rows.length==0) || (type=='any' && voubpac.rows.length==0)) {
-        vote=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
+    if ((type=='one' && voubp.rows.length===0) || (type=='any' && voubpac.rows.length===0)) {
+        voteData=await client.query('INSERT INTO votes (polls_id,account_id,choice_id,data) VALUES ($1,$2,$3,$4) RETURNING *',
             [polls_id, account_id, choice_id,data]
         );
-        let v=choiceData.rows[0].vote+1;
+        let v=parseInt(choiceData.rows[0].vote, 10)+1;
         await client.query('UPDATE choices SET vote=$1 WHERE id=$2', [v,choice_id]);
     } else {
         fail2end(res, 'you already voted.', 400);
         return 400;
     }
-    // vote type for what sends with choice.plain, number, text.
+
     await client.end();
-    res.json(createJsonForVote(vote.rows[0]));
+    res.json(createJsonForVote(voteData.rows[0]));
+    res.end();
+});
+
+app.get(['/api/v2/vote', '/api/v2/vote/:id'], async (req, res) => {
+    const polls_id=(req.path=='/vote'?req.query.id:req.params.id)||0;
+    const token=(req.get('Authorization')||'').substring(7);
+
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountdata.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resourse_owner_id;
+    // if the user vote or not.
+    const voteData=await client.query('SELECT * FROM votes WHERE polls_id=$1 AND account_id=$2', [polls_id, account_id]);
+    if (voteData.rows.length===0) {
+        res.json(createJsonForMessage('info', 'your account haven\'t voted on this poll yet.', 'success'));
+    } else {
+        res.json(createJsonForVote(voteData.rows[0]));
+    }
+
+    await client.end();
+    res.end();
+});
+
+app.delete('/api/v2/vote', async (req, res) => {
+    const polls_id=(req.path=='/vote'?req.query.id:req.params.id)||0;
+    const token=(req.get('Authorization')||'').substring(7);
+    // delete vote if mutable.
+
+    client=new pg.Client(DATABASE_URL);
+    await client.connect();
+    const pollData=await client.query('SELECT * FROM polls WHERE id=$1', [polls_id]);
+    // error if not having one poll for one id.
+    if (pollData.rows.length!==1) {
+        fail2end(res, 'No such poll is created.', 400);
+        return 400;
+    } else if (!pollData.rows[0].mutable) {
+        fail2end(res, 'Cannot delete an immutable vote.', 502);
+        return 502;
+    } else if (pollData.rows[0].time_limit < new Date()) {
+        fail2end(res, 'vote time limit is finished.', 400);
+        return 400;
+    }
+
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountdata.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resourse_owner_id;
+    const voteData=await client.query('SELECT * FREM votes WHERE polls_id=$1 AND account_id=$2', [polls_id, account_id]);
+    // concerns multiple vote.
+    if (voteData.rows.length===0) {
+        fail2end(res, 'You already deleted or not voted.', 400);
+        return 400;
+    }
+    const vote_id=voteData.rows[0].id;
+    // remove if user voted on a mutable poll.
+    const deletedVoteData=await client.query('DELETE FROM votes WHERE id=$1 RETURNING *', [vote_id]);
+    if (deletedVoteData.rows.length===0) {
+        fail2end(res, 'Cannot delete this vote for unknown reason.', 400);
+        return 400;
+    } else if (deletedVoteData.rows.length>1) {
+        fail2end(res, 'This removes more than one row.This action will be canceled.', 400);
+        for(let v in deletedVoteData.rows) {
+            await client.query('INSERT INTO votes (id,polls_id,account_id,choice_id,data) VALUUES ($1,$2,$3,$4,$5)', [v.id, v.polls_id, v.account_id, v.choice_id, v.data]);
+        }
+        return 400;
+    }
+    res.json(createJsonForVote(deletedVoteData.rows[0]));
+    await client.end();
     res.end();
 });
 
 app.post('/api/v2/draft', async (req, res) => {
-    const draft=(req.body.draft||'').substring(0,1000);
-    const in_reply_to_id=parseInt(req.body.in_reply_to_id)||null;
+    const draft=(req.body.draft||'').substring(0, 1000);
+    const in_reply_to_id=req.body.in_reply_to_id||null;
     const _media_ids=req.body.media_ids||[];
-    const sensitive=req.body.sensitive||false;
-    const spoiler_text=req.body.spoiler_text||'';
+    const sensitive=(!!req.body.sensitive&&req.body.sensitive!=='false')||false;
+    const spoiler_text=(req.body.spoiler_text||'').substring(0, 100);
     let visibility=req.body.visibility||'public';
-    const timer=parseInt(req.body.timer)|0;
+    const timer=req.body.timer|0;
     const token=(req.get('Authorization')||'').substring(7);
 
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
     if (_media_ids.length > 4) {
-        fail2end(res,'over 4 medias attached.', 502);
+        fail2end(res,'over 4 media attached.', 502);
         return 502;
     }
 
@@ -263,8 +356,8 @@ app.post('/api/v2/draft', async (req, res) => {
 
     let media_ids=new Array();
     for (let i in _media_ids) {
-        if (!Number.isNaN(parseInt(_media_ids[i]))) {
-            media_ids.push(parseInt(_media_ids[i]));
+        if (!Number.isNaN(parseInt(_media_ids[i], 10))) {
+            media_ids.push(parseInt(_media_ids[i], 10));
         }
     }
 
@@ -286,7 +379,7 @@ app.post('/api/v2/draft', async (req, res) => {
                 "visiblity": visibility
             })+convertArrayToQueryString('media_ids', media_ids);
             const options={
-                "hostname": DOMAIN,
+                "hostname": req.hostname,
                 "path": "/api/v1/statuses",
                 "method": "POST",
                 "timeout": 10,
@@ -297,7 +390,7 @@ app.post('/api/v2/draft', async (req, res) => {
             };
             const req_timer=https.request(options, (res_timer)=>{
                 res_timer.setEncoding('utf8');
-                res_timer.on('error' (e)=>{
+                res_timer.on('error', (e)=>{
                     fail2end(res, 'Unexpected error happend.', res_timer.statusCode());
                 });
             });
@@ -308,7 +401,7 @@ app.post('/api/v2/draft', async (req, res) => {
 });
 
 app.patch('/api/v2/draft', async (req, res) => {
-    const draft_id=req.body.id|0;
+    const draft_id=req.body.id||0;
     const draft=req.body.draft||'';
     const token=(req.get('Authorization')||'').substring(7);
 
@@ -349,8 +442,8 @@ app.patch('/api/v2/draft', async (req, res) => {
     res.end();
 });
 
-app.get('/api/v2/draft', async (req, res) => {
-    const draft_id=req.query.id|0;
+app.get(['/api/v2/draft', '/api/v2/draft/:id'], async (req, res) => {
+    const draft_id=(req.path==='/draft'?req.query.id:req.params.id)||0;
     const token=(req.get('Authorization')||'').substring(7);
     let draftData;
 
@@ -378,7 +471,7 @@ app.get('/api/v2/draft', async (req, res) => {
 });
 
 app.delete('/api/v2/draft', async (req, res) => {
-    const draft_id=req.body.id|0;
+    const draft_id=req.body.id||0;
     const token=(req.get('Authorization')||'').substring(7);
 
     if (!draft_id) {
@@ -413,10 +506,10 @@ app.delete('/api/v2/draft', async (req, res) => {
     res.end();
 });
 
-app.get('/api/v2/stylesheet', async (req, res) => {
-    const theme=req.body.theme;
-    const hue_degree=req.body.hue_degree|0;
-    
+app.get(['/api/v2/stylesheet', '/api/v2/stylesheet/:theme'], async (req, res) => {
+    const theme=req.path==='/stylsheet'?req.query.theme:req.params.theme;
+    const hue_degree=req.query.hue_degree|0;
+
     if (theme) {
         CSS_PATH=CSS_PATH.replace(/\.css/, `-${theme}.css`);
     }
@@ -433,8 +526,8 @@ app.listen(PORT, (err) => {
     }
 });
 
-function createJsonForPoll(pollData,choicesData) {
-    return {
+function createJsonForPoll(pollData, choicesData, voteData) {
+    let ret={
         "id": pollData.id,
         "account_id": pollData.account_id,
         "limit": pollData.time_limit,
@@ -449,6 +542,10 @@ function createJsonForPoll(pollData,choicesData) {
         "url": pollData.url,
         "uri": pollData.uri
     };
+    if (voteData) {
+        ret.meta.votes=voteData;
+    }
+    return ret;
 }
 function createJsonForVote(voteData) {
     return {
@@ -512,18 +609,19 @@ function createJsonForMessage(type, message, status) {
     };
 }
 function fail2end(res, errorMessage, code) {
-    res.status(code);
-    res.json(
-        {
+    res.status(code).json({
             "code": code,
             "meta": createJsonForMessage('error', errorMessage, 'failed'),
             "type": "message"
         }
     );
     res.end();
+    client.end();
 }
 function convertArrayToQueryString(key, valueArray) {
     if (!Array.isArray(valueArray)) {
+        return '';
+    } else if (valueArray.length===0) {
         return '';
     }
     key=encodeURIComponent(key);
