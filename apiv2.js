@@ -320,7 +320,7 @@ app.post('/api/v2/draft', async (req, res) => {
     const _media_ids=req.body.media_ids||[];
     const sensitive=(!!req.body.sensitive&&req.body.sensitive!=='false')||false;
     const spoiler_text=(req.body.spoiler_text||'').substring(0, 100);
-    let visibility=req.body.visibility||'public';
+    const _visibility=req.body.visibility||'public';
     const timer=req.body.timer|0;
     const token=(req.get('Authorization')||'').substring(7);
 
@@ -328,7 +328,7 @@ app.post('/api/v2/draft', async (req, res) => {
     await client.connect();
 
     if (_media_ids.length > 4) {
-        fail2end(res,'over 4 media attached.', 502);
+        fail2end(res,'Over 4 media attached.', 502);
         return 502;
     }
 
@@ -344,11 +344,13 @@ app.post('/api/v2/draft', async (req, res) => {
     }
     const account_id=accountData.rows[0].resource_owner_id;
     // check visibility value.
-    switch (visibility) {
+    let visibility='';
+    switch (_visibility) {
         case 'public':
         case 'unlisted':
         case 'private':
         case 'direct':
+            visibility=_visibility;
             break;
         default:
             visibility='public';
@@ -369,7 +371,7 @@ app.post('/api/v2/draft', async (req, res) => {
     res.end();
 
     //automatically post after time.
-    if (!timer) {
+    if (timer) {
         setTimeout(()=>{
             const postData=querystring.stringify({
                 "status": draft.substring(0,500),
@@ -405,6 +407,7 @@ app.patch('/api/v2/draft', async (req, res) => {
     const draft=req.body.draft||'';
     const token=(req.get('Authorization')||'').substring(7);
 
+    // abort if data isn't set.
     if (!draft_id) {
         fail2end(res, 'draft id is not set.', 400);
         return 400;
@@ -423,13 +426,13 @@ app.patch('/api/v2/draft', async (req, res) => {
 
     //get Account ID.
     const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
-    if (accountData.rows.length===0) {
+    if (accountData.rows.length!==1) {
         fail2end(res, 'Invalid AccessToken.', 400);
         return 400;
     }
     const account_id=accountData.rows[0].resource_owner_id;
     const draft_accountData=await client.query('SELECT account_id FROM drafts WHERE id=$1',  [draft_id]);
-    if (draft_accountData.rows.length===0) {
+    if (draft_accountData.rows.length!==1) {
         fail2end(res, 'Wrong id for a draft.', 502);
         return 502;
     } else if (draft_accountData.rows[0].account_id!=account_id) {
@@ -450,16 +453,26 @@ app.get(['/api/v2/draft', '/api/v2/draft/:id'], async (req, res) => {
     client=new pg.Client(DATABASE_URL);
     await client.connect();
 
-    if (draft_id) { // get draft data of the exact id.
-        draftData=await client.query('SELECT * FROM drafts WHERE id=$1', [draft_id]);
-        res.json(createJsonForDraft(draftData.rows[0]));
-    } else if (token) { // get all draft data for the user.
-        const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
-        if (accountData.rows.length===0) {
-            fail2end(res, 'Invalid AccessToken.', 400);
+    if (!token) {
+        fail2end(res, 'No Access Token set.', 400);
+        return 400;
+    }
+
+    const accountData=await client.query('SELECT resource_owner_id FROM  oauth_access_tokens WHERE token=$1', [token]);
+    if (accountData.rows.length===0) {
+        fail2end(res, 'Invalid AccessToken.', 400);
+        return 400;
+    }
+    const account_id=accountData.rows[0].resource_owner_id;
+
+    if (account_id&&draft_id) { // get draft data of the exact id.
+        draftData=await client.query('SELECT * FROM drafts WHERE id=$1 AND account_id=$2', [draft_id,account_id]);
+        if (draftData.rows.length!==1) {
+            fail2end(res, 'Wrong id for draft or no draft for this user.', 400);
             return 400;
         }
-        const account_id=accountData.rows[0].resource_owner_id;
+        res.json(createJsonForDraft(draftData.rows[0]));
+    } else if (account_id) { // get all draft data for the user.
         draftData=await client.query('SELECT * FROM drafts WHERE account_id=$1', [account_id]);
         res.json(createJsonForDrafts(draftData.rows, account_id));
     } else {
@@ -499,7 +512,7 @@ app.delete('/api/v2/draft', async (req, res) => {
         return 502;
     } else {
         await client.query('DELETE FROM drafts WHERE id=$1', [draft_id]);
-        res.json(createJsonForMessage('delete', `draft id=${draft_id} is deleted.`, 'success'));
+        res.json(createJsonForMessage('delete', `draft ${draft_id} is deleted.`, 'success'));
     }
 
     await client.end();
